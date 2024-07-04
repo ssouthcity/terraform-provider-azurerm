@@ -337,6 +337,52 @@ func resourceDatabricksWorkspace() *pluginsdk.Resource {
 				},
 			},
 
+			"enhanced_security_compliance": {
+				Type:     pluginsdk.TypeList,
+				Optional: true,
+				Computed: true,
+				MaxItems: 1,
+				Elem: &pluginsdk.Resource{
+					Schema: map[string]*pluginsdk.Schema{
+						"automatic_cluster_update_enabled": {
+							Type:     pluginsdk.TypeBool,
+							Optional: true,
+						},
+						"compliance_security_profile": {
+							Type:     pluginsdk.TypeList,
+							Optional: true,
+							Computed: true,
+							MaxItems: 1,
+							Elem: &pluginsdk.Resource{
+								Schema: map[string]*pluginsdk.Schema{
+									"enabled": {
+										Type:     pluginsdk.TypeBool,
+										ForceNew: true,
+										Optional: true,
+									},
+									"compliance_standards": {
+										Type:     pluginsdk.TypeSet,
+										Optional: true,
+										Elem: &pluginsdk.Schema{
+											Type: pluginsdk.TypeString,
+											ValidateFunc: validation.StringInSlice([]string{
+												"NONE",
+												"HIPAA",
+												"PCI_DSS",
+											}, false),
+										},
+									},
+								},
+							},
+						},
+						"enhanced_security_monitoring_enabled": {
+							Type:     pluginsdk.TypeBool,
+							Optional: true,
+						},
+					},
+				},
+			},
+
 			"tags": commonschema.Tags(),
 		},
 
@@ -605,7 +651,6 @@ func resourceDatabricksWorkspaceCreateUpdate(d *pluginsdk.ResourceData, meta int
 		accessConnectorProperties := workspaces.WorkspacePropertiesAccessConnector{}
 		accessConnectorIdRaw := d.Get("access_connector_id").(string)
 		accessConnectorId, err := accessconnector.ParseAccessConnectorID(accessConnectorIdRaw)
-
 		if err != nil {
 			return fmt.Errorf("parsing Access Connector ID %s: %+v", accessConnectorIdRaw, err)
 		}
@@ -647,6 +692,36 @@ func resourceDatabricksWorkspaceCreateUpdate(d *pluginsdk.ResourceData, meta int
 
 	if setEncrypt {
 		workspace.Properties.Encryption = encrypt
+	}
+
+	enhancedSecurityCompliance := d.Get("enhanced_security_compliance").([]interface{})
+
+	if len(enhancedSecurityCompliance) > 0 && enhancedSecurityCompliance[0] != nil {
+		enhancedSecurityComplianceRaw := enhancedSecurityCompliance[0].(map[string]interface{})
+
+		automaticClusterUpdate := workspaces.AutomaticClusterUpdateValueDisabled
+		if enabled, ok := enhancedSecurityComplianceRaw["automatic_cluster_update_enabled"].(bool); ok && enabled {
+			automaticClusterUpdate = workspaces.AutomaticClusterUpdateValueEnabled
+		}
+
+		enhancedSecurityMonitoring := workspaces.EnhancedSecurityMonitoringValueDisabled
+		if enabled, ok := enhancedSecurityComplianceRaw["enhanced_security_monitoring_enabled"].(bool); ok && enabled {
+			enhancedSecurityMonitoring = workspaces.EnhancedSecurityMonitoringValueEnabled
+		}
+
+		complianceSecurityProfile := workspaces.ComplianceSecurityProfileValueDisabled
+		// if ok := d.Get("enhanced_security_compliance.compliance_security_profile.enabled").(bool); ok {
+		// 	complianceSecurityProfile = workspaces.ComplianceSecurityProfileValueEnabled
+		// }
+
+		workspace.Properties.EnhancedSecurityCompliance = &workspaces.EnhancedSecurityComplianceDefinition{
+			AutomaticClusterUpdate:     &workspaces.AutomaticClusterUpdateDefinition{Value: &automaticClusterUpdate},
+			EnhancedSecurityMonitoring: &workspaces.EnhancedSecurityMonitoringDefinition{Value: &enhancedSecurityMonitoring},
+			ComplianceSecurityProfile: &workspaces.ComplianceSecurityProfileDefinition{
+				Value:               &complianceSecurityProfile,
+				ComplianceStandards: &[]workspaces.ComplianceStandard{},
+			},
+		}
 	}
 
 	if err := client.CreateOrUpdateThenPoll(ctx, id, workspace); err != nil {
