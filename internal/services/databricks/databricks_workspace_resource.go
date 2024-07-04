@@ -348,33 +348,33 @@ func resourceDatabricksWorkspace() *pluginsdk.Resource {
 							Type:     pluginsdk.TypeBool,
 							Optional: true,
 						},
-						"compliance_security_profile": {
-							Type:     pluginsdk.TypeList,
-							Optional: true,
-							Computed: true,
-							MaxItems: 1,
-							Elem: &pluginsdk.Resource{
-								Schema: map[string]*pluginsdk.Schema{
-									"enabled": {
-										Type:     pluginsdk.TypeBool,
-										ForceNew: true,
-										Optional: true,
-									},
-									"compliance_standards": {
-										Type:     pluginsdk.TypeSet,
-										Optional: true,
-										Elem: &pluginsdk.Schema{
-											Type: pluginsdk.TypeString,
-											ValidateFunc: validation.StringInSlice([]string{
-												"NONE",
-												"HIPAA",
-												"PCI_DSS",
-											}, false),
-										},
-									},
-								},
-							},
-						},
+						// "compliance_security_profile": {
+						// 	Type:     pluginsdk.TypeList,
+						// 	Optional: true,
+						// 	Computed: true,
+						// 	MaxItems: 1,
+						// 	Elem: &pluginsdk.Resource{
+						// 		Schema: map[string]*pluginsdk.Schema{
+						// 			"enabled": {
+						// 				Type:     pluginsdk.TypeBool,
+						// 				ForceNew: true,
+						// 				Optional: true,
+						// 			},
+						// 			"compliance_standards": {
+						// 				Type:     pluginsdk.TypeSet,
+						// 				Optional: true,
+						// 				Elem: &pluginsdk.Schema{
+						// 					Type: pluginsdk.TypeString,
+						// 					ValidateFunc: validation.StringInSlice([]string{
+						// 						"NONE",
+						// 						"HIPAA",
+						// 						"PCI_DSS",
+						// 					}, false),
+						// 				},
+						// 			},
+						// 		},
+						// 	},
+						// },
 						"enhanced_security_monitoring_enabled": {
 							Type:     pluginsdk.TypeBool,
 							Optional: true,
@@ -902,6 +902,19 @@ func resourceDatabricksWorkspaceRead(d *pluginsdk.ResourceData, meta interface{}
 
 				encryptDiskRotationEnabled = *encryptionProps.RotationToLatestKeyVersionEnabled
 			}
+		}
+
+		if enhancedSecurityCompliance := model.Properties.EnhancedSecurityCompliance; enhancedSecurityCompliance != nil {
+			enhancedSecurityComplianceRaw := map[string]interface{}{}
+			if automaticClusterUpdateProps := enhancedSecurityCompliance.AutomaticClusterUpdate; automaticClusterUpdateProps != nil {
+				enhancedSecurityComplianceRaw["automatic_cluster_update_enabled"] = (*automaticClusterUpdateProps.Value == workspaces.AutomaticClusterUpdateValueEnabled)
+			}
+
+			if enhancedSecurityMonitoringProps := enhancedSecurityCompliance.EnhancedSecurityMonitoring; enhancedSecurityMonitoringProps != nil {
+				enhancedSecurityComplianceRaw["enhanced_security_monitoring_enabled"] = (*enhancedSecurityMonitoringProps.Value == workspaces.EnhancedSecurityMonitoringValueEnabled)
+			}
+
+			d.Set("enhanced_security_compliance", []interface{}{enhancedSecurityComplianceRaw})
 		}
 
 		var encryptDiskEncryptionSetId string
