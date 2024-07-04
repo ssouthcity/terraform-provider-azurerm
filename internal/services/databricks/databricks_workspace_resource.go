@@ -340,7 +340,6 @@ func resourceDatabricksWorkspace() *pluginsdk.Resource {
 			"enhanced_security_compliance": {
 				Type:     pluginsdk.TypeList,
 				Optional: true,
-				Computed: true,
 				MaxItems: 1,
 				Elem: &pluginsdk.Resource{
 					Schema: map[string]*pluginsdk.Schema{
@@ -348,33 +347,27 @@ func resourceDatabricksWorkspace() *pluginsdk.Resource {
 							Type:     pluginsdk.TypeBool,
 							Optional: true,
 						},
-						// "compliance_security_profile": {
-						// 	Type:     pluginsdk.TypeList,
-						// 	Optional: true,
-						// 	Computed: true,
-						// 	MaxItems: 1,
-						// 	Elem: &pluginsdk.Resource{
-						// 		Schema: map[string]*pluginsdk.Schema{
-						// 			"enabled": {
-						// 				Type:     pluginsdk.TypeBool,
-						// 				ForceNew: true,
-						// 				Optional: true,
-						// 			},
-						// 			"compliance_standards": {
-						// 				Type:     pluginsdk.TypeSet,
-						// 				Optional: true,
-						// 				Elem: &pluginsdk.Schema{
-						// 					Type: pluginsdk.TypeString,
-						// 					ValidateFunc: validation.StringInSlice([]string{
-						// 						"NONE",
-						// 						"HIPAA",
-						// 						"PCI_DSS",
-						// 					}, false),
-						// 				},
-						// 			},
-						// 		},
-						// 	},
-						// },
+						"compliance_security_profile": {
+							Type:     pluginsdk.TypeList,
+							Optional: true,
+							MaxItems: 1,
+							Elem: &pluginsdk.Resource{
+								Schema: map[string]*pluginsdk.Schema{
+									"compliance_standards": {
+										Type:     pluginsdk.TypeSet,
+										Optional: true,
+										Elem: &pluginsdk.Schema{
+											Type: pluginsdk.TypeString,
+											ValidateFunc: validation.StringInSlice([]string{
+												string(workspaces.ComplianceStandardNONE),
+												string(workspaces.ComplianceStandardHIPAA),
+												string(workspaces.ComplianceStandardPCIDSS),
+											}, false),
+										},
+									},
+								},
+							},
+						},
 						"enhanced_security_monitoring_enabled": {
 							Type:     pluginsdk.TypeBool,
 							Optional: true,
@@ -694,11 +687,9 @@ func resourceDatabricksWorkspaceCreateUpdate(d *pluginsdk.ResourceData, meta int
 		workspace.Properties.Encryption = encrypt
 	}
 
-	enhancedSecurityCompliance := d.Get("enhanced_security_compliance").([]interface{})
+	enhancedSecurityComplianceRaw := d.Get("enhanced_security_compliance.0").(map[string]interface{})
 
-	if len(enhancedSecurityCompliance) > 0 && enhancedSecurityCompliance[0] != nil {
-		enhancedSecurityComplianceRaw := enhancedSecurityCompliance[0].(map[string]interface{})
-
+	if enhancedSecurityComplianceRaw != nil {
 		automaticClusterUpdate := workspaces.AutomaticClusterUpdateValueDisabled
 		if enabled, ok := enhancedSecurityComplianceRaw["automatic_cluster_update_enabled"].(bool); ok && enabled {
 			automaticClusterUpdate = workspaces.AutomaticClusterUpdateValueEnabled
@@ -709,17 +700,29 @@ func resourceDatabricksWorkspaceCreateUpdate(d *pluginsdk.ResourceData, meta int
 			enhancedSecurityMonitoring = workspaces.EnhancedSecurityMonitoringValueEnabled
 		}
 
-		complianceSecurityProfile := workspaces.ComplianceSecurityProfileValueDisabled
-		// if ok := d.Get("enhanced_security_compliance.compliance_security_profile.enabled").(bool); ok {
-		// 	complianceSecurityProfile = workspaces.ComplianceSecurityProfileValueEnabled
-		// }
+		complianceSecurityProfileEnabled := workspaces.ComplianceSecurityProfileValueDisabled
+		complianceSecurityProfileStandards := []workspaces.ComplianceStandard{}
+
+		complianceSecurityProfileRaw := d.Get("enhanced_security_compliance.0.compliance_security_profile.0").(map[string]interface{})
+		if complianceSecurityProfileRaw != nil {
+			complianceSecurityProfileEnabled = workspaces.ComplianceSecurityProfileValueEnabled
+			complianceSecurityProfileStandards = append(complianceSecurityProfileStandards, workspaces.ComplianceStandardNONE)
+
+			if chosenStandards, ok := complianceSecurityProfileRaw["compliance_standards"].(*pluginsdk.Set); ok && chosenStandards.Len() > 0 {
+				standards := make([]workspaces.ComplianceStandard, chosenStandards.Len())
+				for i, s := range chosenStandards.List() {
+					standards[i] = workspaces.ComplianceStandard(s.(string))
+				}
+				complianceSecurityProfileStandards = standards
+			}
+		}
 
 		workspace.Properties.EnhancedSecurityCompliance = &workspaces.EnhancedSecurityComplianceDefinition{
 			AutomaticClusterUpdate:     &workspaces.AutomaticClusterUpdateDefinition{Value: &automaticClusterUpdate},
 			EnhancedSecurityMonitoring: &workspaces.EnhancedSecurityMonitoringDefinition{Value: &enhancedSecurityMonitoring},
 			ComplianceSecurityProfile: &workspaces.ComplianceSecurityProfileDefinition{
-				Value:               &complianceSecurityProfile,
-				ComplianceStandards: &[]workspaces.ComplianceStandard{},
+				Value:               &complianceSecurityProfileEnabled,
+				ComplianceStandards: &complianceSecurityProfileStandards,
 			},
 		}
 	}
@@ -912,6 +915,22 @@ func resourceDatabricksWorkspaceRead(d *pluginsdk.ResourceData, meta interface{}
 
 			if enhancedSecurityMonitoringProps := enhancedSecurityCompliance.EnhancedSecurityMonitoring; enhancedSecurityMonitoringProps != nil {
 				enhancedSecurityComplianceRaw["enhanced_security_monitoring_enabled"] = (*enhancedSecurityMonitoringProps.Value == workspaces.EnhancedSecurityMonitoringValueEnabled)
+			}
+
+			if *enhancedSecurityCompliance.ComplianceSecurityProfile.Value == workspaces.ComplianceSecurityProfileValueEnabled {
+				complianceSecurityProfileRaw := map[string]interface{}{}
+
+				complianceStandards := pluginsdk.NewSet(pluginsdk.HashString, []interface{}{})
+				if len(*enhancedSecurityCompliance.ComplianceSecurityProfile.ComplianceStandards) > 0 {
+					for _, s := range *enhancedSecurityCompliance.ComplianceSecurityProfile.ComplianceStandards {
+						complianceStandards.Add(string(s))
+					}
+				} else {
+					complianceStandards.Add(string(workspaces.ComplianceStandardNONE))
+				}
+				complianceSecurityProfileRaw["compliance_standards"] = complianceStandards
+
+				enhancedSecurityComplianceRaw["compliance_security_profile"] = complianceSecurityProfileRaw
 			}
 
 			d.Set("enhanced_security_compliance", []interface{}{enhancedSecurityComplianceRaw})
