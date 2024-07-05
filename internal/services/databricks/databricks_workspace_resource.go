@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/go-azure-helpers/lang/pointer"
 	"github.com/hashicorp/go-azure-helpers/lang/response"
 	"github.com/hashicorp/go-azure-helpers/resourcemanager/commonids"
 	"github.com/hashicorp/go-azure-helpers/resourcemanager/commonschema"
@@ -357,12 +358,8 @@ func resourceDatabricksWorkspace() *pluginsdk.Resource {
 										Type:     pluginsdk.TypeSet,
 										Optional: true,
 										Elem: &pluginsdk.Schema{
-											Type: pluginsdk.TypeString,
-											ValidateFunc: validation.StringInSlice([]string{
-												string(workspaces.ComplianceStandardNONE),
-												string(workspaces.ComplianceStandardHIPAA),
-												string(workspaces.ComplianceStandardPCIDSS),
-											}, false),
+											Type:         pluginsdk.TypeString,
+											ValidateFunc: validation.StringInSlice(workspaces.PossibleValuesForComplianceStandard(), false),
 										},
 									},
 								},
@@ -687,44 +684,8 @@ func resourceDatabricksWorkspaceCreateUpdate(d *pluginsdk.ResourceData, meta int
 		workspace.Properties.Encryption = encrypt
 	}
 
-	enhancedSecurityComplianceRaw := d.Get("enhanced_security_compliance.0").(map[string]interface{})
-
-	if enhancedSecurityComplianceRaw != nil {
-		automaticClusterUpdate := workspaces.AutomaticClusterUpdateValueDisabled
-		if enabled, ok := enhancedSecurityComplianceRaw["automatic_cluster_update_enabled"].(bool); ok && enabled {
-			automaticClusterUpdate = workspaces.AutomaticClusterUpdateValueEnabled
-		}
-
-		enhancedSecurityMonitoring := workspaces.EnhancedSecurityMonitoringValueDisabled
-		if enabled, ok := enhancedSecurityComplianceRaw["enhanced_security_monitoring_enabled"].(bool); ok && enabled {
-			enhancedSecurityMonitoring = workspaces.EnhancedSecurityMonitoringValueEnabled
-		}
-
-		complianceSecurityProfileEnabled := workspaces.ComplianceSecurityProfileValueDisabled
-		complianceSecurityProfileStandards := []workspaces.ComplianceStandard{}
-
-		complianceSecurityProfileRaw := d.Get("enhanced_security_compliance.0.compliance_security_profile.0").(map[string]interface{})
-		if complianceSecurityProfileRaw != nil {
-			complianceSecurityProfileEnabled = workspaces.ComplianceSecurityProfileValueEnabled
-			complianceSecurityProfileStandards = append(complianceSecurityProfileStandards, workspaces.ComplianceStandardNONE)
-
-			if chosenStandards, ok := complianceSecurityProfileRaw["compliance_standards"].(*pluginsdk.Set); ok && chosenStandards.Len() > 0 {
-				standards := make([]workspaces.ComplianceStandard, chosenStandards.Len())
-				for i, s := range chosenStandards.List() {
-					standards[i] = workspaces.ComplianceStandard(s.(string))
-				}
-				complianceSecurityProfileStandards = standards
-			}
-		}
-
-		workspace.Properties.EnhancedSecurityCompliance = &workspaces.EnhancedSecurityComplianceDefinition{
-			AutomaticClusterUpdate:     &workspaces.AutomaticClusterUpdateDefinition{Value: &automaticClusterUpdate},
-			EnhancedSecurityMonitoring: &workspaces.EnhancedSecurityMonitoringDefinition{Value: &enhancedSecurityMonitoring},
-			ComplianceSecurityProfile: &workspaces.ComplianceSecurityProfileDefinition{
-				Value:               &complianceSecurityProfileEnabled,
-				ComplianceStandards: &complianceSecurityProfileStandards,
-			},
-		}
+	if v, ok := d.GetOk("enhanced_security_compliance"); ok {
+		workspace.Properties.EnhancedSecurityCompliance = expandWorkspaceEnhancedSecurity(v.([]interface{}))
 	}
 
 	if err := client.CreateOrUpdateThenPoll(ctx, id, workspace); err != nil {
@@ -907,34 +868,7 @@ func resourceDatabricksWorkspaceRead(d *pluginsdk.ResourceData, meta interface{}
 			}
 		}
 
-		if enhancedSecurityCompliance := model.Properties.EnhancedSecurityCompliance; enhancedSecurityCompliance != nil {
-			enhancedSecurityComplianceRaw := map[string]interface{}{}
-			if automaticClusterUpdateProps := enhancedSecurityCompliance.AutomaticClusterUpdate; automaticClusterUpdateProps != nil {
-				enhancedSecurityComplianceRaw["automatic_cluster_update_enabled"] = (*automaticClusterUpdateProps.Value == workspaces.AutomaticClusterUpdateValueEnabled)
-			}
-
-			if enhancedSecurityMonitoringProps := enhancedSecurityCompliance.EnhancedSecurityMonitoring; enhancedSecurityMonitoringProps != nil {
-				enhancedSecurityComplianceRaw["enhanced_security_monitoring_enabled"] = (*enhancedSecurityMonitoringProps.Value == workspaces.EnhancedSecurityMonitoringValueEnabled)
-			}
-
-			if *enhancedSecurityCompliance.ComplianceSecurityProfile.Value == workspaces.ComplianceSecurityProfileValueEnabled {
-				complianceSecurityProfileRaw := map[string]interface{}{}
-
-				complianceStandards := pluginsdk.NewSet(pluginsdk.HashString, []interface{}{})
-				if len(*enhancedSecurityCompliance.ComplianceSecurityProfile.ComplianceStandards) > 0 {
-					for _, s := range *enhancedSecurityCompliance.ComplianceSecurityProfile.ComplianceStandards {
-						complianceStandards.Add(string(s))
-					}
-				} else {
-					complianceStandards.Add(string(workspaces.ComplianceStandardNONE))
-				}
-				complianceSecurityProfileRaw["compliance_standards"] = complianceStandards
-
-				enhancedSecurityComplianceRaw["compliance_security_profile"] = complianceSecurityProfileRaw
-			}
-
-			d.Set("enhanced_security_compliance", []interface{}{enhancedSecurityComplianceRaw})
-		}
+		d.Set("enhanced_security_compliance", flattenWorkspaceEnhancedSecurity(model.Properties.EnhancedSecurityCompliance))
 
 		var encryptDiskEncryptionSetId string
 		if model.Properties.DiskEncryptionSetId != nil {
@@ -1194,4 +1128,89 @@ func workspaceCustomParametersString() []string {
 		"custom_parameters.0.nat_gateway_name", "custom_parameters.0.public_ip_name", "custom_parameters.0.storage_account_name", "custom_parameters.0.storage_account_sku_name",
 		"custom_parameters.0.vnet_address_prefix",
 	}
+}
+
+func flattenWorkspaceEnhancedSecurity(input *workspaces.EnhancedSecurityComplianceDefinition) []interface{} {
+	if input == nil {
+		return nil
+	}
+
+	enhancedSecurityCompliance := make(map[string]interface{})
+
+	if v := input.AutomaticClusterUpdate; v != nil {
+		enhancedSecurityCompliance["automatic_cluster_update_enabled"] = (pointer.From(v.Value) == workspaces.AutomaticClusterUpdateValueEnabled)
+	}
+
+	if v := input.EnhancedSecurityMonitoring; v != nil {
+		enhancedSecurityCompliance["enhanced_security_monitoring_enabled"] = (pointer.From(v.Value) == workspaces.EnhancedSecurityMonitoringValueEnabled)
+	}
+
+	if profileProps := input.ComplianceSecurityProfile; profileProps != nil {
+		if pointer.From(profileProps.Value) == workspaces.ComplianceSecurityProfileValueEnabled {
+			profile := make(map[string]interface{})
+
+			if v := profileProps.ComplianceStandards; v != nil {
+				standards := pluginsdk.NewSet(pluginsdk.HashString, []interface{}{})
+				for _, s := range *v {
+					standards.Add(string(s))
+				}
+				profile["compliance_standards"] = standards
+			}
+
+			enhancedSecurityCompliance["compliance_security_profile"] = profile
+		}
+	}
+
+	return []interface{}{enhancedSecurityCompliance}
+}
+
+func expandWorkspaceEnhancedSecurity(input []interface{}) *workspaces.EnhancedSecurityComplianceDefinition {
+	if len(input) == 0 || input[0] == nil {
+		return nil
+	}
+
+	config := input[0].(map[string]interface{})
+
+	security := workspaces.EnhancedSecurityComplianceDefinition{
+		AutomaticClusterUpdate: &workspaces.AutomaticClusterUpdateDefinition{
+			Value: pointer.To(workspaces.AutomaticClusterUpdateValueDisabled),
+		},
+		EnhancedSecurityMonitoring: &workspaces.EnhancedSecurityMonitoringDefinition{
+			Value: pointer.To(workspaces.EnhancedSecurityMonitoringValueDisabled),
+		},
+		ComplianceSecurityProfile: &workspaces.ComplianceSecurityProfileDefinition{
+			Value:               pointer.To(workspaces.ComplianceSecurityProfileValueDisabled),
+			ComplianceStandards: &[]workspaces.ComplianceStandard{},
+		},
+	}
+
+	if enabled, ok := config["automatic_cluster_update_enabled"].(bool); ok && enabled {
+		security.AutomaticClusterUpdate.Value = pointer.To(workspaces.AutomaticClusterUpdateValueEnabled)
+	}
+
+	if enabled, ok := config["enhanced_security_monitoring_enabled"].(bool); ok && enabled {
+		security.EnhancedSecurityMonitoring.Value = pointer.To(workspaces.EnhancedSecurityMonitoringValueEnabled)
+	}
+
+	complianceInput := config["compliance_security_profile"].([]interface{})
+
+	if len(complianceInput) == 0 || complianceInput == nil {
+		return &security
+	}
+
+	complianceConfig := complianceInput[0].(map[string]interface{})
+
+	if standards, ok := complianceConfig["compliance_standards"].(*pluginsdk.Set); ok {
+		parsedStandards := make([]workspaces.ComplianceStandard, standards.Len())
+		for i, s := range standards.List() {
+			parsedStandards[i] = workspaces.ComplianceStandard(s.(string))
+		}
+
+		security.ComplianceSecurityProfile = &workspaces.ComplianceSecurityProfileDefinition{
+			Value:               pointer.To(workspaces.ComplianceSecurityProfileValueEnabled),
+			ComplianceStandards: &parsedStandards,
+		}
+	}
+
+	return &security
 }
