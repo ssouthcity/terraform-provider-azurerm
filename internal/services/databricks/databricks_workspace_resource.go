@@ -354,12 +354,21 @@ func resourceDatabricksWorkspace() *pluginsdk.Resource {
 							MaxItems: 1,
 							Elem: &pluginsdk.Resource{
 								Schema: map[string]*pluginsdk.Schema{
+									"enabled": {
+										Type:         pluginsdk.TypeBool,
+										Optional:     true,
+										RequiredWith: []string{"enhanced_security_compliance.0.compliance_security_profile.0.compliance_standards"},
+									},
 									"compliance_standards": {
-										Type:     pluginsdk.TypeSet,
-										Optional: true,
+										Type:         pluginsdk.TypeSet,
+										Optional:     true,
+										RequiredWith: []string{"enhanced_security_compliance.0.compliance_security_profile.0.enabled"},
 										Elem: &pluginsdk.Schema{
-											Type:         pluginsdk.TypeString,
-											ValidateFunc: validation.StringInSlice(workspaces.PossibleValuesForComplianceStandard(), false),
+											Type: pluginsdk.TypeString,
+											ValidateFunc: validation.StringInSlice(
+												utils.RemoveFromStringArray(workspaces.PossibleValuesForComplianceStandard(), string(workspaces.ComplianceStandardNONE)),
+												false,
+											),
 										},
 									},
 								},
@@ -376,46 +385,67 @@ func resourceDatabricksWorkspace() *pluginsdk.Resource {
 			"tags": commonschema.Tags(),
 		},
 
-		CustomizeDiff: pluginsdk.CustomizeDiffShim(func(ctx context.Context, d *pluginsdk.ResourceDiff, v interface{}) error {
-			_, customerEncryptionEnabled := d.GetChange("customer_managed_key_enabled")
-			_, defaultStorageFirewallEnabled := d.GetChange("default_storage_firewall_enabled")
-			_, infrastructureEncryptionEnabled := d.GetChange("infrastructure_encryption_enabled")
-			_, publicNetworkAccess := d.GetChange("public_network_access_enabled")
-			_, requireNsgRules := d.GetChange("network_security_group_rules_required")
-			_, backendPool := d.GetChange("load_balancer_backend_address_pool_id")
-			_, managedServicesCMK := d.GetChange("managed_services_cmk_key_vault_key_id")
-			_, managedDiskCMK := d.GetChange("managed_disk_cmk_key_vault_key_id")
+		CustomizeDiff: pluginsdk.CustomDiffWithAll(
+			pluginsdk.ForceNewIfChange("enhanced_security_compliance.0.compliance_security_profile.0.enabled", func(ctx context.Context, old, new, meta interface{}) bool {
+				return old.(bool) && !new.(bool)
+			}),
+			pluginsdk.ForceNewIfChange("enhanced_security_compliance.0.compliance_security_profile.0.compliance_standards", func(ctx context.Context, old, new, meta interface{}) bool {
+				removedStandards := old.(*pluginsdk.Set).Difference(new.(*pluginsdk.Set))
+				return removedStandards.Len() > 0
+			}),
+			pluginsdk.CustomizeDiffShim(func(ctx context.Context, d *pluginsdk.ResourceDiff, v interface{}) error {
+				_, complianceSecurityProfileEnabled := d.GetChange("enhanced_security_compliance.0.compliance_security_profile.0.enabled")
+				_, automaticClusterUpdateEnabled := d.GetChange("enhanced_security_compliance.0.automatic_cluster_update_enabled")
+				_, enhancedSecurityMonitoringEnabled := d.GetChange("enhanced_security_compliance.0.enhanced_security_monitoring_enabled")
 
-			oldSku, newSku := d.GetChange("sku")
-
-			// Disabling Public Network Access means that this is a Private Endpoint Workspace
-			// Having a Load Balancer Backend Address Pool means the this is a Secure Cluster Connectivity Workspace
-			// You cannot have a Private Enpoint Workspace and a Secure Cluster Connectivity Workspace definitions in
-			// the same workspace configuration...
-			if !publicNetworkAccess.(bool) {
-				if requireNsgRules.(string) == string(workspaces.RequiredNsgRulesAllRules) {
-					return fmt.Errorf("having 'network_security_group_rules_required' set to %q and 'public_network_access_enabled' set to 'false' is an invalid configuration", string(workspaces.RequiredNsgRulesAllRules))
+				if complianceSecurityProfileEnabled.(bool) && (!automaticClusterUpdateEnabled.(bool) || !enhancedSecurityMonitoringEnabled.(bool)) {
+					return fmt.Errorf("'automatic_cluster_update_enabled' and 'enhanced_security_monitoring_enabled' must be set to true when using 'compliance_security_profile'")
 				}
-				if backendPool.(string) != "" {
-					return fmt.Errorf("having 'load_balancer_backend_address_pool_id' defined and having 'public_network_access_enabled' set to 'false' is an invalid configuration")
+
+				return nil
+			}),
+			pluginsdk.CustomizeDiffShim(func(ctx context.Context, d *pluginsdk.ResourceDiff, v interface{}) error {
+				_, customerEncryptionEnabled := d.GetChange("customer_managed_key_enabled")
+				_, defaultStorageFirewallEnabled := d.GetChange("default_storage_firewall_enabled")
+				_, infrastructureEncryptionEnabled := d.GetChange("infrastructure_encryption_enabled")
+				_, publicNetworkAccess := d.GetChange("public_network_access_enabled")
+				_, requireNsgRules := d.GetChange("network_security_group_rules_required")
+				_, backendPool := d.GetChange("load_balancer_backend_address_pool_id")
+				_, managedServicesCMK := d.GetChange("managed_services_cmk_key_vault_key_id")
+				_, managedDiskCMK := d.GetChange("managed_disk_cmk_key_vault_key_id")
+				_, enhancedSecurityCompliance := d.GetChange("enhanced_security_compliance")
+
+				oldSku, newSku := d.GetChange("sku")
+
+				// Disabling Public Network Access means that this is a Private Endpoint Workspace
+				// Having a Load Balancer Backend Address Pool means the this is a Secure Cluster Connectivity Workspace
+				// You cannot have a Private Enpoint Workspace and a Secure Cluster Connectivity Workspace definitions in
+				// the same workspace configuration...
+				if !publicNetworkAccess.(bool) {
+					if requireNsgRules.(string) == string(workspaces.RequiredNsgRulesAllRules) {
+						return fmt.Errorf("having 'network_security_group_rules_required' set to %q and 'public_network_access_enabled' set to 'false' is an invalid configuration", string(workspaces.RequiredNsgRulesAllRules))
+					}
+					if backendPool.(string) != "" {
+						return fmt.Errorf("having 'load_balancer_backend_address_pool_id' defined and having 'public_network_access_enabled' set to 'false' is an invalid configuration")
+					}
 				}
-			}
 
-			if d.HasChange("sku") {
-				if newSku == "trial" {
-					log.Printf("[DEBUG] recreate databricks workspace, cannot be migrated to %s", newSku)
-					d.ForceNew("sku")
-				} else {
-					log.Printf("[DEBUG] databricks workspace can be upgraded from %s to %s", oldSku, newSku)
+				if d.HasChange("sku") {
+					if newSku == "trial" {
+						log.Printf("[DEBUG] recreate databricks workspace, cannot be migrated to %s", newSku)
+						d.ForceNew("sku")
+					} else {
+						log.Printf("[DEBUG] databricks workspace can be upgraded from %s to %s", oldSku, newSku)
+					}
 				}
-			}
 
-			if (customerEncryptionEnabled.(bool) || defaultStorageFirewallEnabled.(bool) || infrastructureEncryptionEnabled.(bool) || managedServicesCMK.(string) != "" || managedDiskCMK.(string) != "") && !strings.EqualFold("premium", newSku.(string)) {
-				return fmt.Errorf("'customer_managed_key_enabled', 'default_storage_firewall_enabled', 'infrastructure_encryption_enabled', 'managed_disk_cmk_key_vault_key_id' and 'managed_services_cmk_key_vault_key_id' are only available with a 'premium' workspace 'sku', got %q", newSku)
-			}
+				if (customerEncryptionEnabled.(bool) || defaultStorageFirewallEnabled.(bool) || enhancedSecurityCompliance != nil || infrastructureEncryptionEnabled.(bool) || managedServicesCMK.(string) != "" || managedDiskCMK.(string) != "") && !strings.EqualFold("premium", newSku.(string)) {
+					return fmt.Errorf("'customer_managed_key_enabled', 'default_storage_firewall_enabled', 'enhanced_security_compliance', 'infrastructure_encryption_enabled', 'managed_disk_cmk_key_vault_key_id' and 'managed_services_cmk_key_vault_key_id' are only available with a 'premium' workspace 'sku', got %q", newSku)
+				}
 
-			return nil
-		}),
+				return nil
+			}),
+		),
 	}
 }
 
