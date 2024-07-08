@@ -364,11 +364,8 @@ func resourceDatabricksWorkspace() *pluginsdk.Resource {
 										Optional:     true,
 										RequiredWith: []string{"enhanced_security_compliance.0.compliance_security_profile.0.enabled"},
 										Elem: &pluginsdk.Schema{
-											Type: pluginsdk.TypeString,
-											ValidateFunc: validation.StringInSlice(
-												utils.RemoveFromStringArray(workspaces.PossibleValuesForComplianceStandard(), string(workspaces.ComplianceStandardNONE)),
-												false,
-											),
+											Type:         pluginsdk.TypeString,
+											ValidateFunc: validation.StringInSlice(workspaces.PossibleValuesForComplianceStandard(), false),
 										},
 									},
 								},
@@ -1175,20 +1172,8 @@ func flattenWorkspaceEnhancedSecurity(input *workspaces.EnhancedSecurityComplian
 		enhancedSecurityCompliance["enhanced_security_monitoring_enabled"] = (pointer.From(v.Value) == workspaces.EnhancedSecurityMonitoringValueEnabled)
 	}
 
-	if profileProps := input.ComplianceSecurityProfile; profileProps != nil {
-		if pointer.From(profileProps.Value) == workspaces.ComplianceSecurityProfileValueEnabled {
-			profile := make(map[string]interface{})
-
-			if v := profileProps.ComplianceStandards; v != nil {
-				standards := pluginsdk.NewSet(pluginsdk.HashString, []interface{}{})
-				for _, s := range *v {
-					standards.Add(string(s))
-				}
-				profile["compliance_standards"] = standards
-			}
-
-			enhancedSecurityCompliance["compliance_security_profile"] = profile
-		}
+	if v := input.ComplianceSecurityProfile; v != nil {
+		enhancedSecurityCompliance["compliance_security_profile"] = flattenComplianceSecurityProfile(v)
 	}
 
 	return []interface{}{enhancedSecurityCompliance}
@@ -1222,25 +1207,57 @@ func expandWorkspaceEnhancedSecurity(input []interface{}) *workspaces.EnhancedSe
 		security.EnhancedSecurityMonitoring.Value = pointer.To(workspaces.EnhancedSecurityMonitoringValueEnabled)
 	}
 
-	complianceInput := config["compliance_security_profile"].([]interface{})
-
-	if len(complianceInput) == 0 || complianceInput == nil {
-		return &security
-	}
-
-	complianceConfig := complianceInput[0].(map[string]interface{})
-
-	if standards, ok := complianceConfig["compliance_standards"].(*pluginsdk.Set); ok {
-		parsedStandards := make([]workspaces.ComplianceStandard, standards.Len())
-		for i, s := range standards.List() {
-			parsedStandards[i] = workspaces.ComplianceStandard(s.(string))
-		}
-
-		security.ComplianceSecurityProfile = &workspaces.ComplianceSecurityProfileDefinition{
-			Value:               pointer.To(workspaces.ComplianceSecurityProfileValueEnabled),
-			ComplianceStandards: &parsedStandards,
-		}
+	complianceSecurityProfile := expandComplianceSecurityProfile(config["compliance_security_profile"].([]interface{}))
+	if complianceSecurityProfile != nil {
+		security.ComplianceSecurityProfile = complianceSecurityProfile
 	}
 
 	return &security
+}
+
+func flattenComplianceSecurityProfile(input *workspaces.ComplianceSecurityProfileDefinition) []interface{} {
+	if input == nil {
+		return nil
+	}
+
+	config := make(map[string]interface{})
+
+	config["enabled"] = (*input.Value == workspaces.ComplianceSecurityProfileValueEnabled)
+
+	standards := pluginsdk.NewSet(pluginsdk.HashString, nil)
+	for _, s := range *input.ComplianceStandards {
+		standards.Add(string(s))
+	}
+	config["compliance_standards"] = standards
+
+	return []interface{}{config}
+}
+
+func expandComplianceSecurityProfile(input []interface{}) *workspaces.ComplianceSecurityProfileDefinition {
+	if input == nil || len(input) == 0 {
+		return nil
+	}
+
+	config := input[0].(map[string]interface{})
+
+	enabled := workspaces.ComplianceSecurityProfileValueDisabled
+	standards := []workspaces.ComplianceStandard{}
+
+	if v, ok := config["enabled"].(bool); ok && v {
+		enabled = workspaces.ComplianceSecurityProfileValueEnabled
+	} else {
+		standards = append(standards, workspaces.ComplianceStandardNONE)
+	}
+
+	if v, ok := config["compliance_standards"].(*pluginsdk.Set); ok && v.Len() > 0 {
+		standards = make([]workspaces.ComplianceStandard, v.Len())
+		for i, s := range v.List() {
+			standards[i] = workspaces.ComplianceStandard(s.(string))
+		}
+	}
+
+	return &workspaces.ComplianceSecurityProfileDefinition{
+		Value:               pointer.To(enabled),
+		ComplianceStandards: pointer.To(standards),
+	}
 }
