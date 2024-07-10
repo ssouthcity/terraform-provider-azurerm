@@ -811,15 +811,6 @@ resource "azurerm_databricks_workspace" "test" {
     private_subnet_network_security_group_association_id = azurerm_subnet_network_security_group_association.private.id
   }
 
-  enhanced_security_compliance {
-    compliance_security_profile {
-      compliance_standards = ["NONE"]
-    }
-
-    automatic_cluster_update_enabled     = true
-    enhanced_security_monitoring_enabled = true
-  }
-
   tags = {
     Environment = "Production"
     Pricing     = "Standard"

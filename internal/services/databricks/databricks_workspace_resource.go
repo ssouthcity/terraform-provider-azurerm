@@ -347,33 +347,28 @@ func resourceDatabricksWorkspace() *pluginsdk.Resource {
 						"automatic_cluster_update_enabled": {
 							Type:     pluginsdk.TypeBool,
 							Optional: true,
+							Default:  false,
 						},
-						"compliance_security_profile": {
-							Type:     pluginsdk.TypeList,
+						"compliance_security_profile_enabled": {
+							Type:     pluginsdk.TypeBool,
 							Optional: true,
-							MaxItems: 1,
-							Elem: &pluginsdk.Resource{
-								Schema: map[string]*pluginsdk.Schema{
-									"enabled": {
-										Type:         pluginsdk.TypeBool,
-										Optional:     true,
-										RequiredWith: []string{"enhanced_security_compliance.0.compliance_security_profile.0.compliance_standards"},
-									},
-									"compliance_standards": {
-										Type:         pluginsdk.TypeSet,
-										Optional:     true,
-										RequiredWith: []string{"enhanced_security_compliance.0.compliance_security_profile.0.enabled"},
-										Elem: &pluginsdk.Schema{
-											Type:         pluginsdk.TypeString,
-											ValidateFunc: validation.StringInSlice(workspaces.PossibleValuesForComplianceStandard(), false),
-										},
-									},
-								},
+							Default:  false,
+						},
+						"compliance_security_profile_standards": {
+							Type:     pluginsdk.TypeSet,
+							Optional: true,
+							Elem: &pluginsdk.Schema{
+								Type: pluginsdk.TypeString,
+								ValidateFunc: validation.StringInSlice([]string{
+									string(workspaces.ComplianceStandardHIPAA),
+									string(workspaces.ComplianceStandardPCIDSS),
+								}, false),
 							},
 						},
 						"enhanced_security_monitoring_enabled": {
 							Type:     pluginsdk.TypeBool,
 							Optional: true,
+							Default:  false,
 						},
 					},
 				},
@@ -383,24 +378,36 @@ func resourceDatabricksWorkspace() *pluginsdk.Resource {
 		},
 
 		CustomizeDiff: pluginsdk.CustomDiffWithAll(
-			pluginsdk.ForceNewIfChange("enhanced_security_compliance.0.compliance_security_profile.0.enabled", func(ctx context.Context, old, new, meta interface{}) bool {
+
+			// once enabled, azure expects the enhanced security profile to be sent with every subsequent apply
+			pluginsdk.ForceNewIfChange("enhanced_security_compliance.0", func(ctx context.Context, old, new, meta interface{}) bool {
+				return old != nil && new == nil
+			}),
+
+			// Once enabled, compliance security profile cannot be disabled
+			pluginsdk.ForceNewIfChange("enhanced_security_compliance.0.compliance_security_profile_enabled", func(ctx context.Context, old, new, meta interface{}) bool {
 				return old.(bool) && !new.(bool)
 			}),
-			pluginsdk.ForceNewIfChange("enhanced_security_compliance.0.compliance_security_profile.0.compliance_standards", func(ctx context.Context, old, new, meta interface{}) bool {
+
+			// once enabled, standards cannot be disabled
+			pluginsdk.ForceNewIfChange("enhanced_security_compliance.0.compliance_security_profile_standards", func(ctx context.Context, old, new, meta interface{}) bool {
 				removedStandards := old.(*pluginsdk.Set).Difference(new.(*pluginsdk.Set))
 				return removedStandards.Len() > 0
 			}),
+
+			// compliance security profile requires automatic cluster update and enhanced security monitoring
 			pluginsdk.CustomizeDiffShim(func(ctx context.Context, d *pluginsdk.ResourceDiff, v interface{}) error {
-				_, complianceSecurityProfileEnabled := d.GetChange("enhanced_security_compliance.0.compliance_security_profile.0.enabled")
+				_, complianceSecurityProfileEnabled := d.GetOk("enhanced_security_compliance.0.compliance_security_profile_enabled")
 				_, automaticClusterUpdateEnabled := d.GetChange("enhanced_security_compliance.0.automatic_cluster_update_enabled")
 				_, enhancedSecurityMonitoringEnabled := d.GetChange("enhanced_security_compliance.0.enhanced_security_monitoring_enabled")
 
-				if complianceSecurityProfileEnabled.(bool) && (!automaticClusterUpdateEnabled.(bool) || !enhancedSecurityMonitoringEnabled.(bool)) {
+				if complianceSecurityProfileEnabled && (!automaticClusterUpdateEnabled.(bool) || !enhancedSecurityMonitoringEnabled.(bool)) {
 					return fmt.Errorf("'automatic_cluster_update_enabled' and 'enhanced_security_monitoring_enabled' must be set to true when using 'compliance_security_profile'")
 				}
 
 				return nil
 			}),
+
 			pluginsdk.CustomizeDiffShim(func(ctx context.Context, d *pluginsdk.ResourceDiff, v interface{}) error {
 				_, customerEncryptionEnabled := d.GetChange("customer_managed_key_enabled")
 				_, defaultStorageFirewallEnabled := d.GetChange("default_storage_firewall_enabled")
@@ -711,8 +718,8 @@ func resourceDatabricksWorkspaceCreateUpdate(d *pluginsdk.ResourceData, meta int
 		workspace.Properties.Encryption = encrypt
 	}
 
-	if v, ok := d.GetOk("enhanced_security_compliance"); ok {
-		workspace.Properties.EnhancedSecurityCompliance = expandWorkspaceEnhancedSecurity(v.([]interface{}))
+	if enhancedSecurityCompliance, ok := d.GetOk("enhanced_security_compliance"); ok {
+		workspace.Properties.EnhancedSecurityCompliance = expandWorkspaceEnhancedSecurity(enhancedSecurityCompliance.([]interface{}))
 	}
 
 	if err := client.CreateOrUpdateThenPoll(ctx, id, workspace); err != nil {
@@ -1165,15 +1172,25 @@ func flattenWorkspaceEnhancedSecurity(input *workspaces.EnhancedSecurityComplian
 	enhancedSecurityCompliance := make(map[string]interface{})
 
 	if v := input.AutomaticClusterUpdate; v != nil {
-		enhancedSecurityCompliance["automatic_cluster_update_enabled"] = (pointer.From(v.Value) == workspaces.AutomaticClusterUpdateValueEnabled)
+		enhancedSecurityCompliance["automatic_cluster_update_enabled"] = *v.Value != workspaces.AutomaticClusterUpdateValueDisabled
 	}
 
 	if v := input.EnhancedSecurityMonitoring; v != nil {
-		enhancedSecurityCompliance["enhanced_security_monitoring_enabled"] = (pointer.From(v.Value) == workspaces.EnhancedSecurityMonitoringValueEnabled)
+		enhancedSecurityCompliance["enhanced_security_monitoring_enabled"] = *v.Value != workspaces.EnhancedSecurityMonitoringValueDisabled
 	}
 
 	if v := input.ComplianceSecurityProfile; v != nil {
-		enhancedSecurityCompliance["compliance_security_profile"] = flattenComplianceSecurityProfile(v)
+		enhancedSecurityCompliance["compliance_security_profile_enabled"] = *v.Value != workspaces.ComplianceSecurityProfileValueDisabled
+
+		standards := pluginsdk.NewSet(pluginsdk.HashString, nil)
+		for _, s := range *v.ComplianceStandards {
+			if s == workspaces.ComplianceStandardNONE {
+				continue
+			}
+			standards.Add(string(s))
+		}
+
+		enhancedSecurityCompliance["compliance_security_profile_standards"] = standards
 	}
 
 	return []interface{}{enhancedSecurityCompliance}
@@ -1186,78 +1203,42 @@ func expandWorkspaceEnhancedSecurity(input []interface{}) *workspaces.EnhancedSe
 
 	config := input[0].(map[string]interface{})
 
-	security := workspaces.EnhancedSecurityComplianceDefinition{
-		AutomaticClusterUpdate: &workspaces.AutomaticClusterUpdateDefinition{
-			Value: pointer.To(workspaces.AutomaticClusterUpdateValueDisabled),
-		},
-		EnhancedSecurityMonitoring: &workspaces.EnhancedSecurityMonitoringDefinition{
-			Value: pointer.To(workspaces.EnhancedSecurityMonitoringValueDisabled),
-		},
-		ComplianceSecurityProfile: &workspaces.ComplianceSecurityProfileDefinition{
-			Value:               pointer.To(workspaces.ComplianceSecurityProfileValueDisabled),
-			ComplianceStandards: &[]workspaces.ComplianceStandard{},
-		},
-	}
-
+	automaticClusterUpdateEnabled := workspaces.AutomaticClusterUpdateValueDisabled
 	if enabled, ok := config["automatic_cluster_update_enabled"].(bool); ok && enabled {
-		security.AutomaticClusterUpdate.Value = pointer.To(workspaces.AutomaticClusterUpdateValueEnabled)
+		automaticClusterUpdateEnabled = workspaces.AutomaticClusterUpdateValueEnabled
 	}
 
+	enhancedSecurityMonitoringEnabled := workspaces.EnhancedSecurityMonitoringValueDisabled
 	if enabled, ok := config["enhanced_security_monitoring_enabled"].(bool); ok && enabled {
-		security.EnhancedSecurityMonitoring.Value = pointer.To(workspaces.EnhancedSecurityMonitoringValueEnabled)
+		enhancedSecurityMonitoringEnabled = workspaces.EnhancedSecurityMonitoringValueEnabled
 	}
 
-	complianceSecurityProfile := expandComplianceSecurityProfile(config["compliance_security_profile"].([]interface{}))
-	if complianceSecurityProfile != nil {
-		security.ComplianceSecurityProfile = complianceSecurityProfile
+	complianceSecurityProfileEnabled := workspaces.ComplianceSecurityProfileValueDisabled
+	if enabled, ok := config["compliance_security_profile_enabled"].(bool); ok && enabled {
+		complianceSecurityProfileEnabled = workspaces.ComplianceSecurityProfileValueEnabled
 	}
 
-	return &security
-}
-
-func flattenComplianceSecurityProfile(input *workspaces.ComplianceSecurityProfileDefinition) []interface{} {
-	if input == nil {
-		return nil
-	}
-
-	config := make(map[string]interface{})
-
-	config["enabled"] = (*input.Value == workspaces.ComplianceSecurityProfileValueEnabled)
-
-	standards := pluginsdk.NewSet(pluginsdk.HashString, nil)
-	for _, s := range *input.ComplianceStandards {
-		standards.Add(string(s))
-	}
-	config["compliance_standards"] = standards
-
-	return []interface{}{config}
-}
-
-func expandComplianceSecurityProfile(input []interface{}) *workspaces.ComplianceSecurityProfileDefinition {
-	if input == nil || len(input) == 0 {
-		return nil
-	}
-
-	config := input[0].(map[string]interface{})
-
-	enabled := workspaces.ComplianceSecurityProfileValueDisabled
-	standards := []workspaces.ComplianceStandard{}
-
-	if v, ok := config["enabled"].(bool); ok && v {
-		enabled = workspaces.ComplianceSecurityProfileValueEnabled
-	} else {
-		standards = append(standards, workspaces.ComplianceStandardNONE)
-	}
-
-	if v, ok := config["compliance_standards"].(*pluginsdk.Set); ok && v.Len() > 0 {
-		standards = make([]workspaces.ComplianceStandard, v.Len())
-		for i, s := range v.List() {
-			standards[i] = workspaces.ComplianceStandard(s.(string))
+	complianceStandards := []workspaces.ComplianceStandard{}
+	if standardSet, ok := config["compliance_security_profile_standards"].(*pluginsdk.Set); ok {
+		for _, s := range standardSet.List() {
+			complianceStandards = append(complianceStandards, workspaces.ComplianceStandard(s.(string)))
 		}
 	}
 
-	return &workspaces.ComplianceSecurityProfileDefinition{
-		Value:               pointer.To(enabled),
-		ComplianceStandards: pointer.To(standards),
+	if complianceSecurityProfileEnabled == workspaces.ComplianceSecurityProfileValueEnabled && len(complianceStandards) == 0 {
+		complianceStandards = append(complianceStandards, workspaces.ComplianceStandardNONE)
+	}
+
+	return &workspaces.EnhancedSecurityComplianceDefinition{
+		AutomaticClusterUpdate: &workspaces.AutomaticClusterUpdateDefinition{
+			Value: pointer.To(automaticClusterUpdateEnabled),
+		},
+		EnhancedSecurityMonitoring: &workspaces.EnhancedSecurityMonitoringDefinition{
+			Value: pointer.To(enhancedSecurityMonitoringEnabled),
+		},
+		ComplianceSecurityProfile: &workspaces.ComplianceSecurityProfileDefinition{
+			Value:               pointer.To(complianceSecurityProfileEnabled),
+			ComplianceStandards: pointer.To(complianceStandards),
+		},
 	}
 }
