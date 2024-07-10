@@ -380,8 +380,8 @@ func resourceDatabricksWorkspace() *pluginsdk.Resource {
 		CustomizeDiff: pluginsdk.CustomDiffWithAll(
 
 			// once enabled, azure expects the enhanced security profile to be sent with every subsequent apply
-			pluginsdk.ForceNewIfChange("enhanced_security_compliance.0", func(ctx context.Context, old, new, meta interface{}) bool {
-				return old != nil && new == nil
+			pluginsdk.ForceNewIfChange("enhanced_security_compliance", func(ctx context.Context, old, new, meta interface{}) bool {
+				return len(old.([]interface{})) > 0 && len(new.([]interface{})) == 0
 			}),
 
 			// Once enabled, compliance security profile cannot be disabled
