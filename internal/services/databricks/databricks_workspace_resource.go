@@ -380,17 +380,12 @@ func resourceDatabricksWorkspace() *pluginsdk.Resource {
 
 		CustomizeDiff: pluginsdk.CustomDiffWithAll(
 
-			// once enabled, azure expects the enhanced security profile to be sent with every subsequent apply
-			// pluginsdk.ForceNewIfChange("enhanced_security_compliance", func(ctx context.Context, old, new, meta interface{}) bool {
-			// 	return len(old.([]interface{})) > 0 && len(new.([]interface{})) == 0
-			// }),
-
-			// Once enabled, compliance security profile cannot be disabled
+			// Once compliance security profile has been enabled, it cannot be disabled
 			pluginsdk.ForceNewIfChange("enhanced_security_compliance.0.compliance_security_profile_enabled", func(ctx context.Context, old, new, meta interface{}) bool {
 				return old.(bool) && !new.(bool)
 			}),
 
-			// once enabled, standards cannot be disabled
+			// once a compliance standards is enabled, it cannot be disabled
 			pluginsdk.ForceNewIfChange("enhanced_security_compliance.0.compliance_security_profile_standards", func(ctx context.Context, old, new, meta interface{}) bool {
 				removedStandards := old.(*pluginsdk.Set).Difference(new.(*pluginsdk.Set))
 				return removedStandards.Len() > 0
@@ -398,12 +393,24 @@ func resourceDatabricksWorkspace() *pluginsdk.Resource {
 
 			// compliance security profile requires automatic cluster update and enhanced security monitoring
 			pluginsdk.CustomizeDiffShim(func(ctx context.Context, d *pluginsdk.ResourceDiff, v interface{}) error {
-				_, complianceSecurityProfileEnabled := d.GetOk("enhanced_security_compliance.0.compliance_security_profile_enabled")
+				_, complianceSecurityProfileEnabled := d.GetChange("enhanced_security_compliance.0.compliance_security_profile_enabled")
 				_, automaticClusterUpdateEnabled := d.GetChange("enhanced_security_compliance.0.automatic_cluster_update_enabled")
 				_, enhancedSecurityMonitoringEnabled := d.GetChange("enhanced_security_compliance.0.enhanced_security_monitoring_enabled")
 
-				if complianceSecurityProfileEnabled && (!automaticClusterUpdateEnabled.(bool) || !enhancedSecurityMonitoringEnabled.(bool)) {
+				if complianceSecurityProfileEnabled.(bool) && (!automaticClusterUpdateEnabled.(bool) || !enhancedSecurityMonitoringEnabled.(bool)) {
 					return fmt.Errorf("'automatic_cluster_update_enabled' and 'enhanced_security_monitoring_enabled' must be set to true when using 'compliance_security_profile'")
+				}
+
+				return nil
+			}),
+
+			// compliance standards cannot be specified without enabling compliance profile
+			pluginsdk.CustomizeDiffShim(func(ctx context.Context, d *pluginsdk.ResourceDiff, v interface{}) error {
+				_, complianceSecurityProfileEnabled := d.GetChange("enhanced_security_compliance.0.compliance_security_profile_enabled")
+				_, complianceStandards := d.GetChange("enhanced_security_compliance.0.compliance_security_profile_standards")
+
+				if !complianceSecurityProfileEnabled.(bool) && complianceStandards.(*pluginsdk.Set).Len() > 0 {
+					return fmt.Errorf("'compliance_security_profile_standards' cannot be set when 'compliance_security_profile_enabled' is false")
 				}
 
 				return nil
