@@ -355,8 +355,9 @@ func resourceDatabricksWorkspace() *pluginsdk.Resource {
 							Default:  false,
 						},
 						"compliance_security_profile_standards": {
-							Type:     pluginsdk.TypeSet,
-							Optional: true,
+							Type:         pluginsdk.TypeSet,
+							Optional:     true,
+							RequiredWith: []string{"enhanced_security_compliance.0.compliance_security_profile_enabled"},
 							Elem: &pluginsdk.Schema{
 								Type: pluginsdk.TypeString,
 								ValidateFunc: validation.StringInSlice([]string{
@@ -380,9 +381,9 @@ func resourceDatabricksWorkspace() *pluginsdk.Resource {
 		CustomizeDiff: pluginsdk.CustomDiffWithAll(
 
 			// once enabled, azure expects the enhanced security profile to be sent with every subsequent apply
-			pluginsdk.ForceNewIfChange("enhanced_security_compliance", func(ctx context.Context, old, new, meta interface{}) bool {
-				return len(old.([]interface{})) > 0 && len(new.([]interface{})) == 0
-			}),
+			// pluginsdk.ForceNewIfChange("enhanced_security_compliance", func(ctx context.Context, old, new, meta interface{}) bool {
+			// 	return len(old.([]interface{})) > 0 && len(new.([]interface{})) == 0
+			// }),
 
 			// Once enabled, compliance security profile cannot be disabled
 			pluginsdk.ForceNewIfChange("enhanced_security_compliance.0.compliance_security_profile_enabled", func(ctx context.Context, old, new, meta interface{}) bool {
@@ -718,9 +719,8 @@ func resourceDatabricksWorkspaceCreateUpdate(d *pluginsdk.ResourceData, meta int
 		workspace.Properties.Encryption = encrypt
 	}
 
-	if enhancedSecurityCompliance, ok := d.GetOk("enhanced_security_compliance"); ok {
-		workspace.Properties.EnhancedSecurityCompliance = expandWorkspaceEnhancedSecurity(enhancedSecurityCompliance.([]interface{}))
-	}
+	enhancedSecurityCompliance := d.Get("enhanced_security_compliance")
+	workspace.Properties.EnhancedSecurityCompliance = expandWorkspaceEnhancedSecurity(enhancedSecurityCompliance.([]interface{}))
 
 	if err := client.CreateOrUpdateThenPoll(ctx, id, workspace); err != nil {
 		return fmt.Errorf("creating/updating %s: %+v", id, err)
@@ -902,7 +902,9 @@ func resourceDatabricksWorkspaceRead(d *pluginsdk.ResourceData, meta interface{}
 			}
 		}
 
-		d.Set("enhanced_security_compliance", flattenWorkspaceEnhancedSecurity(model.Properties.EnhancedSecurityCompliance))
+		if _, ok := d.GetOk("enhanced_security_compliance"); ok {
+			d.Set("enhanced_security_compliance", flattenWorkspaceEnhancedSecurity(model.Properties.EnhancedSecurityCompliance))
+		}
 
 		var encryptDiskEncryptionSetId string
 		if model.Properties.DiskEncryptionSetId != nil {
@@ -1197,11 +1199,13 @@ func flattenWorkspaceEnhancedSecurity(input *workspaces.EnhancedSecurityComplian
 }
 
 func expandWorkspaceEnhancedSecurity(input []interface{}) *workspaces.EnhancedSecurityComplianceDefinition {
-	if len(input) == 0 || input[0] == nil {
-		return nil
-	}
+	var config map[string]interface{}
 
-	config := input[0].(map[string]interface{})
+	if len(input) == 0 || input[0] == nil {
+		config = make(map[string]interface{})
+	} else {
+		config = input[0].(map[string]interface{})
+	}
 
 	automaticClusterUpdateEnabled := workspaces.AutomaticClusterUpdateValueDisabled
 	if enabled, ok := config["automatic_cluster_update_enabled"].(bool); ok && enabled {
